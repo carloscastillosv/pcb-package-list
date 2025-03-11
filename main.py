@@ -6,117 +6,144 @@ import uuid
 import sqlite3
 from datetime import datetime
 
+
 def get_po_excel_files():
+    """
+        Get all Excel files starting with 'PO' in a folder and process them.
+        The processed data is saved to a SQLite database and a joined Excel file is created.
+
+        param: None
+        return: None
+    """
     folder_path = input("Enter the folder path: ").strip()
-    
+
     if not os.path.isdir(folder_path):
         print("Invalid folder path. Please enter a valid directory.")
         return
 
     common_prefix = "PO"
-    po_files = [f for f in os.listdir(folder_path) if f.startswith(common_prefix) and f.lower().endswith((".xls", "xlsx", "xlsm"))]
-    
+
+    po_files = [f for f in os.listdir(folder_path) if f.startswith(
+        common_prefix) and f.lower().endswith((".xls", "xlsx", "xlsm"))]
+
     if not po_files:
         print("No Excel files starting with 'PO' found.")
         return
-    
+
     processguid = str(uuid.uuid4())  # Single GUID for all files processed
-    all_parent_data = []
-    all_detail_data = []
     
+    all_ic_data = []
+    all_iv_data = []
+
     conn = sqlite3.connect("po_data.db")
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS process_control (
-            ProcessGUID TEXT,
-            FileGUID TEXT,
-            FileName TEXT,
-            StartProcess DATETIME,
-            EndProcess DATETIME
+            process_guid TEXT,
+            file_guid TEXT,
+            file_name TEXT,
+            start_datetime DATETIME,
+            end_datetime DATETIME
         )
     """)
     conn.commit()
-        
+
     for file in po_files:
         print(f"Processing: {file}")
         fileguid = str(uuid.uuid4())
         file_start_time = datetime.now()
-        parent_data, detail_data = process_excel_file(os.path.join(folder_path, file), processguid, fileguid)
+        ic_data, iv_data = process_excel_file(
+            os.path.join(folder_path, file), processguid, fileguid)
         file_end_time = datetime.now()
-        
-        if parent_data and detail_data:
-            all_parent_data.extend(parent_data)
-            all_detail_data.extend(detail_data)
-        
+
+        if ic_data and iv_data:
+            all_ic_data.extend(ic_data)
+            all_iv_data.extend(iv_data)
+
         cursor.execute("""
-            INSERT INTO process_control (ProcessGUID, FileGUID, FileName, StartProcess, EndProcess) 
+            INSERT INTO process_control (process_guid, file_guid, file_name, start_datetime, end_datetime) 
             VALUES (?, ?, ?, ?, ?)
         """, (processguid, fileguid, file, file_start_time, file_end_time))
         conn.commit()
-    
-    if all_parent_data and all_detail_data:
-        df_parent = pd.DataFrame(all_parent_data)
-        df_child = pd.DataFrame(all_detail_data)
-        
-        df_parent.to_sql("informacion_comercial", conn, if_exists="append", index=False)
-        df_child.to_sql("informacion_variable", conn, if_exists="append", index=False)
-        
+
+    if all_ic_data and all_iv_data:
+        df_parent = pd.DataFrame(all_ic_data)
+        df_child = pd.DataFrame(all_iv_data)
+
+        df_parent.to_sql("informacion_comercial", conn,
+                         if_exists="append", index=False)
+        df_child.to_sql("informacion_variable", conn,
+                        if_exists="append", index=False)
+
         query = """
-            SELECT ic.Process_GUID as PROCESSGUID,
-		ic.File_GUID  as FILEGUID,
-            ic.ordencompra as OC, 
-            ic.pedido as PEDIDO, 
-            iv.size as TALLA, 
-            iv.upc as UPC, 
-            iv.composicion as COMPOSICION, 
-            " " as Material,
-            ic.descripcion as DESCRIPCION,
-            iv.qty*1000 as CANTIDAD,
-            CEIL(iv.qty*1000/ic.observaciones) as CANTIDAD_CHAROLAS,
-            REPLACE(CAST(FLOOR(iv.qty*1000/ic.observaciones) AS TEXT) || '(' || CAST(FLOOR(iv.qty*1000/ic.observaciones)*ic.observaciones AS TEXT) || ') 1.0(' || CAST(iv.qty*1000%ic.observaciones AS TEXT) || ')','.0','') as DETALLE            
-        FROM informacion_comercial ic
-        INNER JOIN informacion_variable iv 
-        ON (ic.Process_GUID  = iv.Process_GUID 
-		and ic.File_GUID  = iv.File_GUID)
-        where ic.Process_GUID = ?
+            SELECT 
+                ic.orden_compra as OC, 
+                ic.pedido as PEDIDO, 
+                iv.talla as TALLA, 
+                iv.upc as UPC, 
+                iv.composicion as COMPOSICION, 
+                " " as Material,
+                ic.descripcion as DESCRIPCION,
+                iv.qty*1000 as CANTIDAD,
+                CEIL(iv.qty*1000/ic.observaciones) as CANTIDAD_CHAROLAS,
+                REPLACE(CAST(FLOOR(iv.qty*1000/ic.observaciones) AS TEXT) || '(' || CAST(FLOOR(iv.qty*1000/ic.observaciones)*ic.observaciones AS TEXT) || ') 1.0(' || CAST(iv.qty*1000%ic.observaciones AS TEXT) || ')','.0','') as DETALLE
+            FROM informacion_comercial ic
+            INNER JOIN informacion_variable iv 
+            ON (ic.process_guid  = iv.process_guid AND ic.file_guid  = iv.file_guid)
+            WHERE ic.process_guid = ?
         """
         df_joined = pd.read_sql(query, conn, params=[processguid])
-        
-        output_file = os.path.join(folder_path, "joined_data.xlsx")
+
+        output_file = os.path.join(folder_path, "Lista de Empaque.xlsx")
         df_joined.to_excel(output_file, sheet_name="Joined_Data", index=False)
-        print(f"Excel file '{output_file}' created successfully with joined data.")
-    
+        print(
+            f"Excel file '{output_file}' created successfully with joined data.")
+
     conn.close()
     print("Data successfully saved to SQLite database.")
+    input("Press any key to close")
+
 
 def process_excel_file(file_path, processguid, fileguid):
+    """
+    Process the Excel file and return the data in a structured format.
+
+    Args:
+        file_path (str) : Path of the Excel file to be processed
+        processguid (str) : GUID for the process
+        fileguid (str) : GUID for the file
+        
+    Returns:
+        tuple : A tuple containing the parent data and detail data
+    """
     config = configparser.ConfigParser()
     config.read("config.ini")
-    
+
     workbook = xlrd.open_workbook(file_path)
-    
+
     sheet = workbook.sheet_by_name("Información Comercial")
-    parent_data = []
-    
-    parent_entry = {"Process_GUID": processguid, "File_GUID": fileguid}
+    ic_data = []
+
+    ic_entry = {"process_guid": processguid, "file_guid": fileguid}
 
     for key, value in config["MainTable"].items():
         row, col = map(int, value.split(","))
-        parent_entry[key] = sheet.cell_value(row, col)
-    
-    parent_data.append(parent_entry)
-    
+        ic_entry[key] = sheet.cell_value(row, col)
+
+    ic_data.append(ic_entry)
+
     sheet_child = workbook.sheet_by_name("Información variable")
-    detail_data = []
-    
+    iv_data = []
+
     for row_idx in range(2, sheet_child.nrows):
-        detail_entry = {"Process_GUID": processguid, "File_GUID": fileguid}
+        iv_entry = {"process_guid": processguid, "file_guid": fileguid}
         for key, value in config["DetailTable"].items():
             col = int(value)
-            detail_entry[key] = sheet_child.cell_value(row_idx, col)
-        detail_data.append(detail_entry)
-    
-    return parent_data, detail_data
+            iv_entry[key] = sheet_child.cell_value(row_idx, col)
+        iv_data.append(iv_entry)
+
+    return ic_data, iv_data
+
 
 if __name__ == "__main__":
     get_po_excel_files()
