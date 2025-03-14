@@ -9,11 +9,11 @@ from datetime import datetime
 
 def get_po_excel_files():
     """
-        Get all Excel files starting with 'PO' in a folder and process them.
-        The processed data is saved to a SQLite database and a joined Excel file is created.
+    Get all Excel files starting with 'PO' in a folder and process them.
+    The processed data is saved to a SQLite database and a joined Excel file is created.
 
-        param: None
-        return: None
+    param: None
+    return: None
     """
     folder_path = input("Enter the folder path: ").strip()
 
@@ -23,18 +23,21 @@ def get_po_excel_files():
 
     common_prefix = "PO"
 
-    po_files = [f for f in os.listdir(folder_path) if f.startswith(
-        common_prefix) and f.lower().endswith((".xls", "xlsx", "xlsm"))]
+    po_files = [
+        f for f in os.listdir(folder_path)
+        if f.startswith(common_prefix) and f.lower().endswith((".xls", "xlsx", "xlsm"))
+    ]
 
     if not po_files:
         print("No Excel files starting with 'PO' found.")
         return
 
     processguid = str(uuid.uuid4())  # Single GUID for all files processed
-    
+
     all_ic_data = []
     all_iv_data = []
 
+    # Connect to SQLite database
     conn = sqlite3.connect("po_data.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -70,10 +73,8 @@ def get_po_excel_files():
         df_parent = pd.DataFrame(all_ic_data)
         df_child = pd.DataFrame(all_iv_data)
 
-        df_parent.to_sql("informacion_comercial", conn,
-                         if_exists="append", index=False)
-        df_child.to_sql("informacion_variable", conn,
-                        if_exists="append", index=False)
+        df_parent.to_sql("informacion_comercial", conn, if_exists="append", index=False)
+        df_child.to_sql("informacion_variable", conn, if_exists="append", index=False)
 
         query = """
             SELECT 
@@ -86,18 +87,28 @@ def get_po_excel_files():
                 ic.descripcion as DESCRIPCION,
                 iv.qty*1000 as CANTIDAD,
                 CEIL(iv.qty*1000/ic.observaciones) as CANTIDAD_CHAROLAS,
-                REPLACE(CAST(FLOOR(iv.qty*1000/ic.observaciones) AS TEXT) || '(' || CAST(FLOOR(iv.qty*1000/ic.observaciones)*ic.observaciones AS TEXT) || ') 1.0(' || CAST(iv.qty*1000%ic.observaciones AS TEXT) || ')','.0','') as DETALLE
+                CASE WHEN FLOOR(iv.qty*1000/ic.observaciones) > 0 THEN
+                    REPLACE(CAST(FLOOR(iv.qty*1000/ic.observaciones) AS TEXT) || '(' || CAST(FLOOR(iv.qty*1000/ic.observaciones)*ic.observaciones AS TEXT) || ') 1.0(' || CAST(iv.qty*1000%ic.observaciones AS TEXT) || ')','.0','') 
+                ELSE
+                    REPLACE('1 (' || CAST(iv.qty*1000%ic.observaciones AS TEXT) || ')','.0','') 
+                END
+                AS DETALLE
             FROM informacion_comercial ic
             INNER JOIN informacion_variable iv 
             ON (ic.process_guid  = iv.process_guid AND ic.file_guid  = iv.file_guid)
             WHERE ic.process_guid = ?
         """
         df_joined = pd.read_sql(query, conn, params=[processguid])
+        config = configparser.ConfigParser()
+        config.read("config.ini")
+        date_format = config["General"]["dateformat"]
 
-        output_file = os.path.join(folder_path, "Lista de Empaque.xlsx")
+        date_str = datetime.now().strftime(date_format)
+
+        output_file = os.path.join(f"Lista de Empaque - {date_str}.xlsx")
+
         df_joined.to_excel(output_file, sheet_name="Joined_Data", index=False)
-        print(
-            f"Excel file '{output_file}' created successfully with joined data.")
+        print(f"Excel file '{output_file}' created successfully with joined data.")
 
     conn.close()
     print("Data successfully saved to SQLite database.")
@@ -109,18 +120,19 @@ def process_excel_file(file_path, processguid, fileguid):
     Process the Excel file and return the data in a structured format.
 
     Args:
-        file_path (str) : Path of the Excel file to be processed
-        processguid (str) : GUID for the process
-        fileguid (str) : GUID for the file
-        
+        file_path (str): Path of the Excel file to be processed
+        processguid (str): GUID for the process
+        fileguid (str): GUID for the file
+
     Returns:
-        tuple : A tuple containing the parent data and detail data
+        tuple: A tuple containing the parent data and detail data
     """
     config = configparser.ConfigParser()
     config.read("config.ini")
 
     workbook = xlrd.open_workbook(file_path)
 
+    # Process "Información Comercial" sheet
     sheet = workbook.sheet_by_name("Información Comercial")
     ic_data = []
 
@@ -132,6 +144,7 @@ def process_excel_file(file_path, processguid, fileguid):
 
     ic_data.append(ic_entry)
 
+    # Process "Información variable" sheet
     sheet_child = workbook.sheet_by_name("Información variable")
     iv_data = []
 
