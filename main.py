@@ -5,6 +5,13 @@ import configparser
 import uuid
 import sqlite3
 from datetime import datetime
+from sqlite3 import register_adapter
+
+# Register a custom adapter for datetime
+def adapt_datetime(dt):
+    return dt.isoformat()
+
+register_adapter(datetime, adapt_datetime)
 
 
 def get_po_excel_files():
@@ -38,7 +45,7 @@ def get_po_excel_files():
     all_iv_data = []
 
     # Connect to SQLite database
-    conn = sqlite3.connect("po_data.db")
+    conn = sqlite3.connect("po_data.db", detect_types=sqlite3.PARSE_DECLTYPES)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS process_control (
@@ -73,6 +80,10 @@ def get_po_excel_files():
         df_parent = pd.DataFrame(all_ic_data)
         df_child = pd.DataFrame(all_iv_data)
 
+        # Trim spaces in string fields
+        df_parent = df_parent.map(lambda x: x.strip() if isinstance(x, str) else x)
+        df_child = df_child.map(lambda x: x.strip() if isinstance(x, str) else x)
+
         df_parent.to_sql("informacion_comercial", conn, if_exists="append", index=False)
         df_child.to_sql("informacion_variable", conn, if_exists="append", index=False)
 
@@ -99,6 +110,10 @@ def get_po_excel_files():
             WHERE ic.process_guid = ?
         """
         df_joined = pd.read_sql(query, conn, params=[processguid])
+
+        # Trim spaces in string fields for the joined DataFrame
+        df_joined = df_joined.map(lambda x: x.strip() if isinstance(x, str) else x)
+
         config = configparser.ConfigParser()
         config.read("config.ini")
         date_format = config["General"]["dateformat"]
